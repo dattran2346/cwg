@@ -9,6 +9,7 @@ import getopt
 import re
 from enum import Enum
 from cairosvg import svg2png
+import reportlab
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.utils import ImageReader
@@ -71,6 +72,9 @@ WORD_OFFSET = CHARACTER_ROW_HEIGHT/15;
 SUMMATION_OFFSET = 3;
 SUMMATION_FROM_X = GRID_OFFSET*0.4; # word summation
 DEFINITION_SEPARATOR = ', ';
+
+# reportlab.rl_config.TTFSearchPath.append(os.getcwd())
+# print(reportlab.rl_config.TTFSearchPath)
 
 def usage():
     print('usage: ' + PROGRAM_NAME + '\n' + \
@@ -154,7 +158,7 @@ def retrieve_info(dataset_path, character):
                 definition, stroke_order);
     except KeyError:
         raise GenException('Invalid dataset data for character ' + character);
-    
+
 def create_character_svg(working_dir, character_info):
     create_stroke_svg(working_dir, character_info.character, character_info.stroke_order, \
                         len(character_info.stroke_order));
@@ -191,7 +195,7 @@ def convert_svg_to_png(svg_path, png_path):
     with open(svg_path, 'r') as f:
         svg_data = '\n'.join(f.readlines());
     svg2png(bytestring=svg_data, write_to=png_path, \
-            width=quality, height=quality);
+            output_width=quality, output_height=quality);
 
 def convert_svgs_to_pngs(working_dir):
     for file in list_files(working_dir, '.*\.svg'):
@@ -248,7 +252,7 @@ def draw_guide(canvas, x, y, guide):
         x2 = x1;
         y2 = y1 - SQUARE_SIZE;
         canvas.line(x1, y1, x2, y2);
-        
+
     canvas.setDash();
     canvas.setStrokeColor(CMYKColor(0, 0, 0, 1));
 
@@ -260,12 +264,44 @@ def prefill_character(working_dir, canvas, x, y, filename):
             size, \
             size, mask='auto');
 
+def draw_all_character_row(working_dir, canvas, character_infos, y, guide): #TODO: refactor
+    nrof_row = (len(character_infos) // CHARACTERS_PER_ROW) + 1
+    PINYIN_HEIGHT = 2 * RADICAL_PINYIN_HEIGHT
+    ROW_HEIGHT = (SQUARE_SIZE + PINYIN_HEIGHT)*nrof_row
+    repeat = 5 if nrof_row > 1 else 10
+    for t in range(repeat):
+        for index, character_info in enumerate(character_infos):
+            i = index % CHARACTERS_PER_ROW
+            j = index // CHARACTERS_PER_ROW
+            x_ = GRID_OFFSET + i*SQUARE_SIZE
+            y_ = y - j*(SQUARE_SIZE + PINYIN_HEIGHT)
+            pinyin_y = y_-PINYIN_HEIGHT
+
+            canvas.rect(x_, y_-PINYIN_HEIGHT, SQUARE_SIZE, PINYIN_HEIGHT)
+            canvas.rect(x_, y_-SQUARE_SIZE-PINYIN_HEIGHT, SQUARE_SIZE, SQUARE_SIZE)
+            draw_guide(canvas, x_, y-(j+1)*PINYIN_HEIGHT - j*SQUARE_SIZE, guide)
+            prefill_character(working_dir, canvas, x_ + SQUARE_PADDING, y - \
+                    SQUARE_PADDING - (j+1)*PINYIN_HEIGHT - \
+                    j*SQUARE_SIZE, character_info.character + '0.png')
+
+            canvas.setFont(FONT_NAME, FONT_SIZE)
+            # pinyin_size = RADICAL_HEIGHT - 2 *RADICAL_PADDING
+            pinyin = character_info.pinyin[0];
+            pinyin_w = stringWidth(pinyin, FONT_NAME, FONT_SIZE);
+            pinyin_h = FONT_SIZE*0.8
+            pinyin_x = x_ + (SQUARE_SIZE - pinyin_w) // 2
+            pinyin_y = y_ - (pinyin_h + PINYIN_HEIGHT) // 2
+            canvas.drawString(pinyin_x, pinyin_y, pinyin);
+
+        # point y to next row
+        y = y - ROW_HEIGHT
+
 def draw_character_row(working_dir, canvas, character_info, y, guide): #TODO: refactor
-    character_y = y - SQUARE_SIZE;
-    radical_y = character_y - RADICAL_HEIGHT;
+    character_y = y - SQUARE_SIZE; radical_y = character_y - RADICAL_HEIGHT;
     radical_pinyin_y = radical_y - RADICAL_PINYIN_HEIGHT
 
     # draw layout
+    # canvas.rect(x, y, width, heigh)
     canvas.rect(GRID_OFFSET, radical_pinyin_y, \
             SQUARE_SIZE, SQUARE_SIZE + RADICAL_HEIGHT + RADICAL_PINYIN_HEIGHT);
     canvas.rect(GRID_OFFSET+SQUARE_SIZE, radical_pinyin_y, \
@@ -275,8 +311,7 @@ def draw_character_row(working_dir, canvas, character_info, y, guide): #TODO: re
         canvas.rect(GRID_OFFSET + i*SQUARE_SIZE, \
                 radical_pinyin_y - SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE);
         draw_guide(canvas, GRID_OFFSET + i*SQUARE_SIZE, radical_pinyin_y, guide);
-
-    prefill_character(working_dir, canvas, GRID_OFFSET + SQUARE_PADDING, \
+        prefill_character(working_dir, canvas, GRID_OFFSET + SQUARE_PADDING + i*SQUARE_SIZE, \
                         radical_pinyin_y - SQUARE_PADDING, \
                         character_info.character + '0.png');
 
@@ -426,12 +461,13 @@ def draw_full_word(canvas, begin_index, end_index, word):
                                 SUMMATION_FROM_X, ymid, text);
     draw_full_summation_curve(canvas, SUMMATION_FROM_X+SUMMATION_OFFSET, \
                                 yto-h, GRID_OFFSET, yto);
-   
+
 # TODO: this should return list of words not found
 # and main should display them as warnings
 def generate_infos(makemeahanzi_path, cedict_path, working_dir, characters):
     if ( len(characters) == 0 ):
         raise GenException('No characters provided');
+    characters = characters.replace(' ', '')
     manager = WordManager(characters, cedict_path);
     characters = manager.get_characters();
     words = manager.get_words();
@@ -490,7 +526,7 @@ def get_spanning_translations(characters, words):
         to_page_idx = int(word.character_end_index / CHARACTERS_PER_PAGE);
         if from_page_idx == to_page_idx-1:
             words_with_spanning_translations.append(word);
-    
+
     for word in words_with_spanning_translations:
         # bottom translation
         to_idx = word.character_end_index % CHARACTERS_PER_PAGE;
@@ -544,6 +580,16 @@ def generate_sheet(makemeahanzi_path, working_dir, title, guide):
 
     draw_header(c, title, HEADER_FONT_SIZE, \
             PAGE_SIZE[1]-HEADER_PADDING);
+
+    # prepare characters file to draw
+    for i in range(len(character_infos)):
+        info = character_infos[i];
+        create_character_svg(working_dir, info);
+        create_radical_svg(makemeahanzi_path, working_dir, info);
+        create_stroke_order_svgs(working_dir, info);
+        convert_svgs_to_pngs(working_dir);
+
+    # draw every word with its row
     for i in range(len(character_infos)):
         i_mod = i % CHARACTERS_PER_PAGE;
         page_number = int(i / CHARACTERS_PER_PAGE + 1);
@@ -553,28 +599,35 @@ def generate_sheet(makemeahanzi_path, working_dir, title, guide):
             draw_page_number(c, i / CHARACTERS_PER_PAGE, PAGE_NUMBER_FONT_SIZE);
             draw_words(c, character_infos, words, page_number-1, \
                         words_with_spanning_translation);
-            c.showPage();
+            c.showPage();  # add new page
             draw_header(c, title, HEADER_FONT_SIZE, \
                     PAGE_SIZE[1]-HEADER_PADDING);
-        info = character_infos[i];
-        create_character_svg(working_dir, info);
-        create_radical_svg(makemeahanzi_path, working_dir, info);
-        create_stroke_order_svgs(working_dir, info);
-        convert_svgs_to_pngs(working_dir);
         y = FIRST_CHARACTER_ROW_Y-i_mod*CHARACTER_ROW_HEIGHT;
+        info = character_infos[i]
         draw_character_row(working_dir, c, info, y, guide);
-        delete_files(working_dir, '.*\.svg');
-        delete_files(working_dir, '.*\.png');
-    
+
+
+
     y = PAGE_SIZE[1]-HEADER_PADDING-GRID_OFFSET/2 - \
         (CHARACTERS_PER_PAGE-1)*CHARACTER_ROW_HEIGHT;
+
     # TODO: extract
+    # draw on last page
     draw_footer(c, FOOTER_FONT_SIZE, y-CHARACTER_ROW_HEIGHT - \
                     GRID_OFFSET/2);
     draw_page_number(c, page_number, PAGE_NUMBER_FONT_SIZE);
     draw_words(c, character_infos, words, page_number, \
             words_with_spanning_translation);
+
+    # draw last row with all words
     c.showPage();
+    y = FIRST_CHARACTER_ROW_Y
+    draw_all_character_row(working_dir, c, character_infos, y, guide)
+
+    # delete all character files
+    delete_files(working_dir, '.*\.svg');
+    delete_files(working_dir, '.*\.png');
+
     c.save();
 
 def get_guide(guide_str):
@@ -614,6 +667,7 @@ def main(argv):
         elif opt == '--sheet':
             sheet_mode = True;
         else:
+            print(opt)
             usage();
             exit(1);
 
@@ -626,6 +680,7 @@ def main(argv):
             or (info_mode and characters == '') \
             or (sheet_mode and not info_mode and characters != '') \
             or (info_mode and not sheet_mode and title != ''):
+        print('AAA')
         usage();
         exit(1);
 
@@ -646,3 +701,4 @@ def main(argv):
 
 if __name__ == '__main__':
     main(sys.argv[1:]);
+
