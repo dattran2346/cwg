@@ -618,8 +618,7 @@ def generate_sheet(makemeahanzi_path, working_dir, title, guide):
     draw_page_number(c, page_number, PAGE_NUMBER_FONT_SIZE);
     draw_words(c, character_infos, words, page_number, \
             words_with_spanning_translation);
-
-    # draw last row with all words
+    c.setTitle(title);
     c.showPage();
     y = FIRST_CHARACTER_ROW_Y
     draw_all_character_row(working_dir, c, character_infos, y, guide)
